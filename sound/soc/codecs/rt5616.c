@@ -1287,6 +1287,14 @@ static const struct i2c_device_id rt5616_i2c_id[] = {
 };
 MODULE_DEVICE_TABLE(i2c, rt5616_i2c_id);
 
+#if defined(CONFIG_OF)
+static const struct of_device_id rt5616_of_match[] = {
+	{ .compatible = "realtek,rt5616", },
+	{},
+};
+MODULE_DEVICE_TABLE(of, rt5616_of_match);
+#endif
+
 static int rt5616_i2c_probe(struct i2c_client *i2c,
 		    const struct i2c_device_id *id)
 {
@@ -1314,7 +1322,7 @@ static int rt5616_i2c_probe(struct i2c_client *i2c,
 		dev_err(&i2c->dev,
 			"Device with ID register %#x is not rt5616\n",
 			val);
-		ret = -ENODEV;
+		return -ENODEV;
 	}
 	regmap_write(rt5616->regmap, RT5616_RESET, 0);
 	regmap_update_bits(rt5616->regmap, RT5616_PWR_ANLG1,
@@ -1359,6 +1367,7 @@ static void rt5616_i2c_shutdown(struct i2c_client *client)
 static struct i2c_driver rt5616_i2c_driver = {
 	.driver = {
 		.name = "rt5616",
+		.of_match_table = of_match_ptr(rt5616_of_match),
 	},
 	.probe = rt5616_i2c_probe,
 	.remove = rt5616_i2c_remove,
