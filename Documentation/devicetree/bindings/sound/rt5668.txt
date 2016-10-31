@@ -1,0 +1,28 @@
+RT5668/RT5663 audio CODECs
+
+These devices support I2C only.
+
+Required properties:
+
+- compatible : "realtek,rt5668" or "realtek,rt5663"
+
+- reg : The I2C address of the device.
+
+- interrupts : The CODEC's interrupt output.
+
+Pins on the device (for linking into audio routes) for RT5668/RT5663:
+
+  * IN1P
+  * IN1N
+  * IN2P
+  * IN2N
+  * HPOL
+  * HPOR
+
+Example:
+
+codec: rt5668@1a {
+	compatible = "realtek,rt5668";
+	reg = <0x1a>;
+	interrupts = <347>;
+};
