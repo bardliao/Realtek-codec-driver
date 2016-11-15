@@ -17,6 +17,7 @@
 #include <linux/i2c.h>
 #include <linux/platform_device.h>
 #include <linux/spi/spi.h>
+#include <linux/dmi.h>
 #include <linux/acpi.h>
 #include <sound/core.h>
 #include <sound/pcm.h>
@@ -43,7 +44,6 @@ struct rt298_priv {
 	struct i2c_client *i2c;
 	struct snd_soc_jack *jack;
 	struct delayed_work jack_detect_work;
-	struct delayed_work rt298_toggle_work;
 	int sys_clk;
 	int clk_id;
 	int is_hp_in;
@@ -83,6 +83,8 @@ static const struct reg_default rt298_reg[] = {
 	{ 0x00370500, 0x00000400 },
 	{ 0x00870500, 0x00000400 },
 	{ 0x00920000, 0x00000031 },
+	{ 0x00935000, 0x000000c3 },
+	{ 0x00936000, 0x000000c3 },
 	{ 0x00970500, 0x00000400 },
 	{ 0x00b37000, 0x00000097 },
 	{ 0x00b37200, 0x00000097 },
@@ -247,6 +249,11 @@ static int rt298_jack_detect(struct rt298_priv *rt298, bool *hp, bool *mic)
 			snd_soc_dapm_force_enable_pin(dapm, "LDO1");
 			snd_soc_dapm_sync(dapm);
 
+			regmap_update_bits(rt298->regmap,
+				RT298_POWER_CTRL1, 0x1001, 0);
+			regmap_update_bits(rt298->regmap,
+				RT298_POWER_CTRL2, 0x4, 0x4);
+
 			regmap_write(rt298->regmap, RT298_SET_MIC1, 0x24);
 			msleep(50);
 
@@ -274,6 +281,8 @@ static int rt298_jack_detect(struct rt298_priv *rt298, bool *hp, bool *mic)
 		} else {
 			*mic = false;
 			regmap_write(rt298->regmap, RT298_SET_MIC1, 0x20);
+			regmap_update_bits(rt298->regmap,
+				RT298_CBJ_CTRL1, 0x0400, 0x0000);
 		}
 	} else {
 		regmap_read(rt298->regmap, RT298_GET_HP_SENSE, &buf);
@@ -291,18 +300,6 @@ static int rt298_jack_detect(struct rt298_priv *rt298, bool *hp, bool *mic)
 	pr_debug("*hp = %d *mic = %d\n", *hp, *mic);
 
 	return 0;
-}
-
-static void do_rt298_toggle_work(struct work_struct *work)
-{
-	struct rt298_priv *rt298 =
-		container_of(work, struct rt298_priv, rt298_toggle_work.work);
-	int i, val;
-
-	for (i = 0; i < 6 ; i++) {
-		regmap_read(rt298->regmap, RT298_POWER_CTRL1, &val);
-		msleep(100);
-	}
 }
 
 static void rt298_jack_detect_work(struct work_struct *work)
@@ -329,11 +326,31 @@ static void rt298_jack_detect_work(struct work_struct *work)
 int rt298_mic_detect(struct snd_soc_codec *codec, struct snd_soc_jack *jack)
 {
 	struct rt298_priv *rt298 = snd_soc_codec_get_drvdata(codec);
+	struct snd_soc_dapm_context *dapm;
+	bool hp = false;
+	bool mic = false;
+	int status = 0;
+
+	/* If jack in NULL, disable HS jack */
+	if (!jack) {
+		regmap_update_bits(rt298->regmap, RT298_IRQ_CTRL, 0x2, 0x0);
+		dapm = snd_soc_codec_get_dapm(codec);
+		snd_soc_dapm_disable_pin(dapm, "LDO1");
+		snd_soc_dapm_sync(dapm);
+		return 0;
+	}
 
 	rt298->jack = jack;
+	regmap_update_bits(rt298->regmap, RT298_IRQ_CTRL, 0x2, 0x2);
 
-	/* Send an initial empty report */
-	snd_soc_jack_report(rt298->jack, 0,
+	rt298_jack_detect(rt298, &hp, &mic);
+	if (hp == true)
+		status |= SND_JACK_HEADPHONE;
+
+	if (mic == true)
+		status |= SND_JACK_MICROPHONE;
+
+	snd_soc_jack_report(rt298->jack, status,
 		SND_JACK_MICROPHONE | SND_JACK_HEADPHONE);
 
 	return 0;
@@ -483,15 +500,40 @@ static int rt298_adc_event(struct snd_soc_dapm_widget *w,
 			     struct snd_kcontrol *kcontrol, int event)
 {
 	struct snd_soc_codec *codec = snd_soc_dapm_to_codec(w->dapm);
-	struct rt298_priv *rt298 = snd_soc_codec_get_drvdata(codec);
+	unsigned int nid;
+
+	nid = (w->reg >> 20) & 0xff;
 
 	switch (event) {
 	case SND_SOC_DAPM_POST_PMU:
-		schedule_delayed_work(&rt298->rt298_toggle_work,
-					msecs_to_jiffies(50));
+		snd_soc_update_bits(codec,
+			VERB_CMD(AC_VERB_SET_AMP_GAIN_MUTE, nid, 0),
+			0x7080, 0x7000);
+		 /* If MCLK doesn't exist, reset AD filter */
+		if (!(snd_soc_read(codec, RT298_VAD_CTRL) & 0x200)) {
+			pr_info("NO MCLK\n");
+			switch (nid) {
+			case RT298_ADC_IN1:
+				snd_soc_update_bits(codec,
+					RT298_D_FILTER_CTRL, 0x2, 0x2);
+				mdelay(10);
+				snd_soc_update_bits(codec,
+					RT298_D_FILTER_CTRL, 0x2, 0x0);
+				break;
+			case RT298_ADC_IN2:
+				snd_soc_update_bits(codec,
+					RT298_D_FILTER_CTRL, 0x4, 0x4);
+				mdelay(10);
+				snd_soc_update_bits(codec,
+					RT298_D_FILTER_CTRL, 0x4, 0x0);
+				break;
+			}
+		}
 		break;
 	case SND_SOC_DAPM_PRE_PMD:
-		cancel_delayed_work_sync(&rt298->rt298_toggle_work);
+		snd_soc_update_bits(codec,
+			VERB_CMD(AC_VERB_SET_AMP_GAIN_MUTE, nid, 0),
+			0x7080, 0x7080);
 		break;
 	default:
 		return 0;
@@ -525,30 +567,12 @@ static int rt298_mic1_event(struct snd_soc_dapm_widget *w,
 	return 0;
 }
 
-static int rt298_vref_event(struct snd_soc_dapm_widget *w,
-			     struct snd_kcontrol *kcontrol, int event)
-{
-	struct snd_soc_codec *codec = snd_soc_dapm_to_codec(w->dapm);
-
-	switch (event) {
-	case SND_SOC_DAPM_PRE_PMU:
-		snd_soc_update_bits(codec,
-			RT298_CBJ_CTRL1, 0x0400, 0x0000);
-		mdelay(50);
-		break;
-	default:
-		return 0;
-	}
-
-	return 0;
-}
-
 static const struct snd_soc_dapm_widget rt298_dapm_widgets[] = {
 
 	SND_SOC_DAPM_SUPPLY_S("HV", 1, RT298_POWER_CTRL1,
 		12, 1, NULL, 0),
 	SND_SOC_DAPM_SUPPLY("VREF", RT298_POWER_CTRL1,
-		0, 1, rt298_vref_event, SND_SOC_DAPM_PRE_PMU),
+		0, 1, NULL, 0),
 	SND_SOC_DAPM_SUPPLY_S("BG_MBIAS", 1, RT298_POWER_CTRL2,
 		1, 0, NULL, 0),
 	SND_SOC_DAPM_SUPPLY_S("LDO1", 1, RT298_POWER_CTRL2,
@@ -939,18 +963,9 @@ static int rt298_set_bias_level(struct snd_soc_codec *codec,
 		}
 		break;
 
-	case SND_SOC_BIAS_ON:
-		mdelay(30);
-		snd_soc_update_bits(codec,
-			RT298_CBJ_CTRL1, 0x0400, 0x0400);
-
-		break;
-
 	case SND_SOC_BIAS_STANDBY:
 		snd_soc_write(codec,
 			RT298_SET_AUDIO_POWER, AC_PWRST_D3);
-		snd_soc_update_bits(codec,
-			RT298_CBJ_CTRL1, 0x0400, 0x0000);
 		break;
 
 	default:
@@ -1003,8 +1018,6 @@ static int rt298_probe(struct snd_soc_codec *codec)
 		schedule_delayed_work(&rt298->jack_detect_work,
 					msecs_to_jiffies(1250));
 	}
-
-	INIT_DELAYED_WORK(&rt298->rt298_toggle_work, do_rt298_toggle_work);
 
 	return 0;
 }
@@ -1107,12 +1120,14 @@ static struct snd_soc_codec_driver soc_codec_dev_rt298 = {
 	.resume = rt298_resume,
 	.set_bias_level = rt298_set_bias_level,
 	.idle_bias_off = true,
-	.controls = rt298_snd_controls,
-	.num_controls = ARRAY_SIZE(rt298_snd_controls),
-	.dapm_widgets = rt298_dapm_widgets,
-	.num_dapm_widgets = ARRAY_SIZE(rt298_dapm_widgets),
-	.dapm_routes = rt298_dapm_routes,
-	.num_dapm_routes = ARRAY_SIZE(rt298_dapm_routes),
+	.component_driver = {
+		.controls		= rt298_snd_controls,
+		.num_controls		= ARRAY_SIZE(rt298_snd_controls),
+		.dapm_widgets		= rt298_dapm_widgets,
+		.num_dapm_widgets	= ARRAY_SIZE(rt298_dapm_widgets),
+		.dapm_routes		= rt298_dapm_routes,
+		.num_dapm_routes	= ARRAY_SIZE(rt298_dapm_routes),
+	},
 };
 
 static const struct regmap_config rt298_regmap = {
@@ -1139,6 +1154,17 @@ static const struct acpi_device_id rt298_acpi_match[] = {
 	{},
 };
 MODULE_DEVICE_TABLE(acpi, rt298_acpi_match);
+
+static const struct dmi_system_id force_combo_jack_table[] = {
+	{
+		.ident = "Intel Broxton P",
+		.matches = {
+			DMI_MATCH(DMI_SYS_VENDOR, "Intel Corp"),
+			DMI_MATCH(DMI_PRODUCT_NAME, "Broxton P")
+		}
+	},
+	{ }
+};
 
 static int rt298_i2c_probe(struct i2c_client *i2c,
 			   const struct i2c_device_id *id)
@@ -1187,18 +1213,19 @@ static int rt298_i2c_probe(struct i2c_client *i2c,
 		regmap_write(rt298->regmap, rt298_reg[i].reg,
 				rt298_reg[i].def);
 
-	regmap_update_bits(rt298->regmap,
-			VERB_CMD(AC_VERB_SET_AMP_GAIN_MUTE, RT298_ADC_IN1, 0),
-			0x7080, 0x7000);
-
 	if (pdata)
 		rt298->pdata = *pdata;
 
 	/* enable jack combo mode on supported devices */
 	acpiid = acpi_match_device(dev->driver->acpi_match_table, dev);
-	if (acpiid) {
+	if (acpiid && acpiid->driver_data) {
 		rt298->pdata = *(struct rt298_platform_data *)
 				acpiid->driver_data;
+	}
+
+	if (dmi_check_system(force_combo_jack_table)) {
+		rt298->pdata.cbj_en = true;
+		rt298->pdata.gpio2_en = false;
 	}
 
 	/* VREF Charging */
@@ -1236,7 +1263,12 @@ static int rt298_i2c_probe(struct i2c_client *i2c,
 	regmap_write(rt298->regmap, RT298_MISC_CTRL1, 0x0000);
 	regmap_update_bits(rt298->regmap,
 				RT298_WIND_FILTER_CTRL, 0x0082, 0x0082);
-	regmap_update_bits(rt298->regmap, RT298_IRQ_CTRL, 0x2, 0x2);
+
+	regmap_write(rt298->regmap, RT298_UNSOLICITED_INLINE_CMD, 0x81);
+	regmap_write(rt298->regmap, RT298_UNSOLICITED_HP_OUT, 0x82);
+	regmap_write(rt298->regmap, RT298_UNSOLICITED_MIC1, 0x84);
+	regmap_update_bits(rt298->regmap, RT298_IRQ_FLAG_CTRL, 0x2, 0x2);
+
 	rt298->is_hp_in = -1;
 
 	if (rt298->i2c->irq) {
