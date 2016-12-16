@@ -546,6 +546,7 @@ static bool rt5659_volatile_register(struct device *dev, unsigned int reg)
 	case RT5659_HAPTIC_GEN_CTRL_3:
 	case RT5659_HAPTIC_LPF_CTRL_3:
 	case RT5659_CLK_DET:
+	case RT5659_PLL_CTRL_2:
 	case RT5659_MICBIAS_1:
 	case RT5659_ASRC_11:
 	case RT5659_ADC_EQ_CTRL_1:
