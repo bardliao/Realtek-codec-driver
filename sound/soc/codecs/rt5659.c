@@ -1461,6 +1461,20 @@ static void rt5659_jack_detect_work(struct work_struct *work)
 			    SND_JACK_BTN_2 | SND_JACK_BTN_3);
 }
 
+static const char * const hap_mode_text[] = {
+	"Disable",
+	"Disable with braking",
+	"One shoot",
+	"One shoot with braking",
+	"Programmable",
+	"Programmable with braking",
+	"Continuous",
+	"Vibrate with melody",
+};
+
+static SOC_ENUM_SINGLE_DECL(
+	hap_mode, RT5659_HAPTIC_GEN_CTRL_2, 13, hap_mode_text);
+
 static const struct snd_kcontrol_new rt5659_snd_controls[] = {
 	/* Speaker Output Volume */
 	SOC_DOUBLE_TLV("Speaker Playback Volume", RT5659_SPO_VOL,
@@ -1535,6 +1549,8 @@ static const struct snd_kcontrol_new rt5659_snd_controls[] = {
 	SOC_SINGLE("DAC IF1 DAC1 R Data Switch", RT5659_TDM_CTRL_4, 8, 7, 0),
 	SOC_SINGLE("DAC IF1 DAC2 L Data Switch", RT5659_TDM_CTRL_4, 4, 7, 0),
 	SOC_SINGLE("DAC IF1 DAC2 R Data Switch", RT5659_TDM_CTRL_4, 0, 7, 0),
+
+	SOC_ENUM("Haptic Mode", hap_mode),
 };
 
 /**
@@ -2257,6 +2273,19 @@ static const SOC_ENUM_SINGLE_DECL(
 static const struct snd_kcontrol_new rt5659_rx_adc_dac_mux =
 	SOC_DAPM_ENUM("TDM ADCDAT Source", rt5659_rx_adc_data_enum);
 
+/*Haptic*/
+/*MX-60 [13]*/
+static const char * const rt5659_hap_src[] = {
+	"Haptic", "DAC"
+};
+
+static const SOC_ENUM_SINGLE_DECL(
+	rt5659_hap_enum, RT5659_HAPTIC_LPF_CTRL_3,
+	13, rt5659_hap_src);
+
+static const struct snd_kcontrol_new rt5659_hap_mux =
+	SOC_DAPM_ENUM("Haptic Source", rt5659_hap_enum);
+
 /* Out Volume Switch */
 static const struct snd_kcontrol_new spkvol_l_switch =
 	SOC_DAPM_SINGLE("Switch", RT5659_SPO_VOL, RT5659_VOL_L_SFT, 1, 1);
@@ -2444,6 +2473,8 @@ static const struct snd_soc_dapm_widget rt5659_dapm_widgets[] = {
 	SND_SOC_DAPM_INPUT("IN3N"),
 	SND_SOC_DAPM_INPUT("IN4P"),
 	SND_SOC_DAPM_INPUT("IN4N"),
+
+	SND_SOC_DAPM_INPUT("Haptic"),
 
 	SND_SOC_DAPM_PGA("DMIC1", SND_SOC_NOPM, 0, 0, NULL, 0),
 	SND_SOC_DAPM_PGA("DMIC2", SND_SOC_NOPM, 0, 0, NULL, 0),
@@ -2654,6 +2685,9 @@ static const struct snd_soc_dapm_widget rt5659_dapm_widgets[] = {
 	SND_SOC_DAPM_MUX("DAC R1 Mux", SND_SOC_NOPM, 0, 0, &rt5659_dac_r1_mux),
 	SND_SOC_DAPM_MUX("DAC L2 Mux", SND_SOC_NOPM, 0, 0, &rt5659_dac_l2_mux),
 	SND_SOC_DAPM_MUX("DAC R2 Mux", SND_SOC_NOPM, 0, 0, &rt5659_dac_r2_mux),
+	SND_SOC_DAPM_MUX("Haptic Mux", SND_SOC_NOPM, 0, 0, &rt5659_hap_mux),
+	SND_SOC_DAPM_SUPPLY("Haptic Power", RT5659_HAPTIC_GEN_CTRL_1, 12,
+		0, NULL, 0),
 
 	SND_SOC_DAPM_MUX("DAC L1 Source", SND_SOC_NOPM, 0, 0,
 		&rt5659_alg_dac_l1_mux),
@@ -3097,25 +3131,29 @@ static const struct snd_soc_dapm_route rt5659_dapm_routes[] = {
 	{ "DAC R2 Mux", "IF2 DAC", "IF2 DAC R" },
 	{ "DAC R2 Mux", "IF3 DAC", "IF3 DAC R" },
 	{ "DAC R2 Mux", "Mono ADC MIX", "Mono ADC MIXR" },
-	{ "DAC R2 Mux", NULL, "DAC Mono Right Filter" },
+
+	{ "Haptic", NULL, "Haptic Power"},
+	{ "Haptic Mux", "Haptic", "Haptic"},
+	{ "Haptic Mux", "DAC", "DAC R2 Mux"},
+	{ "Haptic Mux", NULL, "DAC Mono Right Filter"},
 
 	{ "Stereo DAC MIXL", "DAC L1 Switch", "DAC1 MIXL" },
 	{ "Stereo DAC MIXL", "DAC R1 Switch", "DAC1 MIXR" },
 	{ "Stereo DAC MIXL", "DAC L2 Switch", "DAC L2 Mux" },
-	{ "Stereo DAC MIXL", "DAC R2 Switch", "DAC R2 Mux" },
+	{ "Stereo DAC MIXL", "DAC R2 Switch", "Haptic Mux" },
 
 	{ "Stereo DAC MIXR", "DAC R1 Switch", "DAC1 MIXR" },
 	{ "Stereo DAC MIXR", "DAC L1 Switch", "DAC1 MIXL" },
 	{ "Stereo DAC MIXR", "DAC L2 Switch", "DAC L2 Mux" },
-	{ "Stereo DAC MIXR", "DAC R2 Switch", "DAC R2 Mux" },
+	{ "Stereo DAC MIXR", "DAC R2 Switch", "Haptic Mux" },
 
 	{ "Mono DAC MIXL", "DAC L1 Switch", "DAC1 MIXL" },
 	{ "Mono DAC MIXL", "DAC R1 Switch", "DAC1 MIXR" },
 	{ "Mono DAC MIXL", "DAC L2 Switch", "DAC L2 Mux" },
-	{ "Mono DAC MIXL", "DAC R2 Switch", "DAC R2 Mux" },
+	{ "Mono DAC MIXL", "DAC R2 Switch", "Haptic Mux" },
 	{ "Mono DAC MIXR", "DAC L1 Switch", "DAC1 MIXL" },
 	{ "Mono DAC MIXR", "DAC R1 Switch", "DAC1 MIXR" },
-	{ "Mono DAC MIXR", "DAC R2 Switch", "DAC R2 Mux" },
+	{ "Mono DAC MIXR", "DAC R2 Switch", "Haptic Mux" },
 	{ "Mono DAC MIXR", "DAC L2 Switch", "DAC L2 Mux" },
 
 	{ "DAC MIXL", "Stereo DAC Mixer", "Stereo DAC MIXL" },
@@ -4179,6 +4217,8 @@ static int rt5659_i2c_probe(struct i2c_client *i2c,
 		dev_warn(&i2c->dev, "Currently, support JD3 only\n");
 		break;
 	}
+
+	regmap_update_bits(rt5659->regmap, RT5659_CLK_DET, 0x4, 0x4);
 
 	INIT_DELAYED_WORK(&rt5659->jack_detect_work, rt5659_jack_detect_work);
 
