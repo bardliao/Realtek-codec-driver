@@ -2422,6 +2422,53 @@ static int set_dmic_power(struct snd_soc_dapm_widget *w,
 	return 0;
 }
 
+static int rt5659_adc_event(struct snd_soc_dapm_widget *w,
+	struct snd_kcontrol *kcontrol, int event)
+{
+	struct snd_soc_codec *codec = snd_soc_dapm_to_codec(w->dapm);
+	struct rt5659_priv *rt5659 = snd_soc_codec_get_drvdata(codec);
+	bool is_clk_on;
+	unsigned int reg_val, val;
+
+	switch (event) {
+	case SND_SOC_DAPM_PRE_PMU:
+		is_clk_on = false;
+		val = snd_soc_read(codec, RT5659_GLB_CLK);
+		val &= RT5659_SCLK_SRC_MASK;
+		if (val == RT5659_SCLK_SRC_PLL1) {
+			if (snd_soc_read(codec, RT5659_PLL_CTRL_2) & 0x1)
+				is_clk_on = true;
+		} else {
+			if (snd_soc_read(codec, RT5659_CLK_DET) & 0x2000)
+				is_clk_on = true;
+		}
+		if (!is_clk_on) {
+			snd_soc_update_bits(codec, RT5659_MICBIAS_2,
+				0x0200, 0x0200);
+			snd_soc_update_bits(codec, RT5659_GLB_CLK,
+				RT5659_SCLK_SRC_MASK, RT5659_SCLK_SRC_RCCLK);
+		}
+		break;
+	case SND_SOC_DAPM_POST_PMU:
+		switch (rt5659->sysclk_src) {
+		case RT5659_SCLK_S_MCLK:
+			reg_val = RT5659_SCLK_SRC_MCLK;
+			break;
+		case RT5659_SCLK_S_PLL1:
+			reg_val = RT5659_SCLK_SRC_PLL1;
+			break;
+		}
+		snd_soc_update_bits(codec, RT5659_GLB_CLK,
+			RT5659_SCLK_SRC_MASK, reg_val);
+		break;
+
+	default:
+		return 0;
+	}
+
+	return 0;
+}
+
 static const struct snd_soc_dapm_widget rt5659_dapm_widgets[] = {
 	SND_SOC_DAPM_SUPPLY("LDO2", RT5659_PWR_ANLG_3, RT5659_PWR_LDO2_BIT, 0,
 		NULL, 0),
@@ -2576,9 +2623,11 @@ static const struct snd_soc_dapm_widget rt5659_dapm_widgets[] = {
 		&rt5659_mono_adc_r_mux),
 	/* ADC Mixer */
 	SND_SOC_DAPM_SUPPLY_S("ADC Stereo1 Filter", 1, RT5659_PWR_DIG_2,
-		RT5659_PWR_ADC_S1F_BIT, 0, NULL, 0),
+		RT5659_PWR_ADC_S1F_BIT, 0, rt5659_adc_event,
+		SND_SOC_DAPM_PRE_PMU | SND_SOC_DAPM_POST_PMU),
 	SND_SOC_DAPM_SUPPLY_S("ADC Stereo2 Filter", 1, RT5659_PWR_DIG_2,
-		RT5659_PWR_ADC_S2F_BIT, 0, NULL, 0),
+		RT5659_PWR_ADC_S2F_BIT, 0, rt5659_adc_event,
+		SND_SOC_DAPM_PRE_PMU | SND_SOC_DAPM_POST_PMU),
 	SND_SOC_DAPM_MIXER("Stereo1 ADC MIXL", SND_SOC_NOPM,
 		0, 0, rt5659_sto1_adc_l_mix,
 		ARRAY_SIZE(rt5659_sto1_adc_l_mix)),
@@ -2586,12 +2635,14 @@ static const struct snd_soc_dapm_widget rt5659_dapm_widgets[] = {
 		0, 0, rt5659_sto1_adc_r_mix,
 		ARRAY_SIZE(rt5659_sto1_adc_r_mix)),
 	SND_SOC_DAPM_SUPPLY_S("ADC Mono Left Filter", 1, RT5659_PWR_DIG_2,
-		RT5659_PWR_ADC_MF_L_BIT, 0, NULL, 0),
+		RT5659_PWR_ADC_MF_L_BIT, 0, rt5659_adc_event,
+		SND_SOC_DAPM_PRE_PMU | SND_SOC_DAPM_POST_PMU),
 	SND_SOC_DAPM_MIXER("Mono ADC MIXL", RT5659_MONO_ADC_DIG_VOL,
 		RT5659_L_MUTE_SFT, 1, rt5659_mono_adc_l_mix,
 		ARRAY_SIZE(rt5659_mono_adc_l_mix)),
 	SND_SOC_DAPM_SUPPLY_S("ADC Mono Right Filter", 1, RT5659_PWR_DIG_2,
-		RT5659_PWR_ADC_MF_R_BIT, 0, NULL, 0),
+		RT5659_PWR_ADC_MF_R_BIT, 0, rt5659_adc_event,
+		SND_SOC_DAPM_PRE_PMU | SND_SOC_DAPM_POST_PMU),
 	SND_SOC_DAPM_MIXER("Mono ADC MIXR", RT5659_MONO_ADC_DIG_VOL,
 		RT5659_R_MUTE_SFT, 1, rt5659_mono_adc_r_mix,
 		ARRAY_SIZE(rt5659_mono_adc_r_mix)),
@@ -4219,7 +4270,7 @@ static int rt5659_i2c_probe(struct i2c_client *i2c,
 		break;
 	}
 
-	regmap_update_bits(rt5659->regmap, RT5659_CLK_DET, 0x4, 0x4);
+	regmap_update_bits(rt5659->regmap, RT5659_CLK_DET, 0x14, 0x14);
 
 	INIT_DELAYED_WORK(&rt5659->jack_detect_work, rt5659_jack_detect_work);
 
